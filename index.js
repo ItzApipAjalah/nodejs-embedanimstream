@@ -5,18 +5,22 @@ const app = express();
 const port = 3000;
 
 // Fungsi untuk memeriksa apakah URL ter-redirect ke domain tertentu
-const getFinalUrl = async (url, maxRedirects = 5) => {
-    try {
-      const response = await axios.get(url, { maxRedirects });
-      return response.request.res.responseUrl; // URL akhir setelah redirect
-    } catch (error) {
-      if (error.response && error.response.status === 302 && maxRedirects > 0) {
-        return getFinalUrl(error.response.headers.location, maxRedirects - 1); // Rekursif untuk redirect
-      }
-      throw error; // Menangani kesalahan lain
+const getFinalUrl = async (url, maxRedirects = 5, retries = 3) => {
+  try {
+    const response = await axios.get(url, { maxRedirects });
+    return response.request.res.responseUrl; // URL akhir setelah redirect
+  } catch (error) {
+    if (error.response && error.response.status === 302 && maxRedirects > 0) {
+      return getFinalUrl(error.response.headers.location, maxRedirects - 1, retries); // Rekursif untuk redirect
     }
-  };
-  
+    if (retries > 0) {
+      console.log(`Retrying... (${retries} retries left)`);
+      await new Promise(res => setTimeout(res, 1000)); // Tunggu 1 detik sebelum retry
+      return getFinalUrl(url, maxRedirects, retries - 1);
+    }
+    throw error; // Menangani kesalahan lain setelah retry
+  }
+};
 
 // Fungsi untuk mengubah URL Mega dari '/file' ke '/embed'
 const convertMegaUrl = (url) => {
@@ -25,29 +29,34 @@ const convertMegaUrl = (url) => {
 
 // Fungsi untuk memfilter dan memilih link download
 const filterDownloadLinks = async (links) => {
-    const filteredLinks = [];
-  
-    // Batasi jumlah permintaan paralel
-    const maxConcurrentRequests = 5;
-    const results = await Promise.all(
-      links.slice(0, maxConcurrentRequests).map(async (link) => {
-        const finalUrl = await getFinalUrl(link.link);
-        if (finalUrl.includes('mega.nz')) {
-          return convertMegaUrl(finalUrl);
-        }
-        return null;
-      })
-    );
-  
-    results.forEach(result => {
-      if (result) {
-        filteredLinks.push(result);
+  const filteredLinks = [];
+
+  // Batasi jumlah permintaan paralel
+  const maxConcurrentRequests = 5;
+  const retryLimit = 3;
+
+  const requests = links.slice(0, maxConcurrentRequests).map(async (link) => {
+    try {
+      const finalUrl = await getFinalUrl(link.link, 5, retryLimit);
+      if (finalUrl.includes('mega.nz')) {
+        return convertMegaUrl(finalUrl);
       }
-    });
-  
-    return filteredLinks.length > 0 ? [filteredLinks[0]] : [];
-  };
-  
+      return null;
+    } catch (error) {
+      console.error('Error fetching download link:', error);
+      return null;
+    }
+  });
+
+  const results = await Promise.all(requests);
+  results.forEach(result => {
+    if (result) {
+      filteredLinks.push(result);
+    }
+  });
+
+  return filteredLinks.length > 0 ? [filteredLinks[0]] : [];
+};
 
 // Endpoint untuk scraping
 app.get('/scrape/:endpoint', async (req, res) => {
