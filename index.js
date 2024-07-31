@@ -5,17 +5,18 @@ const app = express();
 const port = 3000;
 
 // Fungsi untuk memeriksa apakah URL ter-redirect ke domain tertentu
-const getFinalUrl = async (url) => {
-  try {
-    const response = await axios.get(url, { maxRedirects: 0 });
-    return response.request.res.responseUrl; // URL akhir setelah redirect
-  } catch (error) {
-    if (error.response && error.response.status === 302) {
-      return error.response.headers.location; // URL setelah redirect
+const getFinalUrl = async (url, maxRedirects = 5) => {
+    try {
+      const response = await axios.get(url, { maxRedirects });
+      return response.request.res.responseUrl; // URL akhir setelah redirect
+    } catch (error) {
+      if (error.response && error.response.status === 302 && maxRedirects > 0) {
+        return getFinalUrl(error.response.headers.location, maxRedirects - 1); // Rekursif untuk redirect
+      }
+      throw error; // Menangani kesalahan lain
     }
-    throw error; // Menangani kesalahan lain
-  }
-};
+  };
+  
 
 // Fungsi untuk mengubah URL Mega dari '/file' ke '/embed'
 const convertMegaUrl = (url) => {
@@ -24,17 +25,29 @@ const convertMegaUrl = (url) => {
 
 // Fungsi untuk memfilter dan memilih link download
 const filterDownloadLinks = async (links) => {
-  const filteredLinks = [];
+    const filteredLinks = [];
   
-  for (const link of links) {
-    const finalUrl = await getFinalUrl(link.link);
-    if (finalUrl.includes('mega.nz')) {
-      filteredLinks.push(convertMegaUrl(finalUrl));
-    }
-  }
+    // Batasi jumlah permintaan paralel
+    const maxConcurrentRequests = 5;
+    const results = await Promise.all(
+      links.slice(0, maxConcurrentRequests).map(async (link) => {
+        const finalUrl = await getFinalUrl(link.link);
+        if (finalUrl.includes('mega.nz')) {
+          return convertMegaUrl(finalUrl);
+        }
+        return null;
+      })
+    );
   
-  return filteredLinks.length > 0 ? [filteredLinks[0]] : [];
-};
+    results.forEach(result => {
+      if (result) {
+        filteredLinks.push(result);
+      }
+    });
+  
+    return filteredLinks.length > 0 ? [filteredLinks[0]] : [];
+  };
+  
 
 // Endpoint untuk scraping
 app.get('/scrape/:endpoint', async (req, res) => {
